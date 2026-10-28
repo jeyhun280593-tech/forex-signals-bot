@@ -2,14 +2,13 @@ import asyncio
 import logging
 import aiohttp
 import pandas as pd
-import ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# ТОКЕН ТВОЕГО БОТА
+# ТОКЕН ТВОЕГО БОТА (ОСТАВЛЯЕМ СТАРЫЙ)
 BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 
-# ИСПРАВЛЕНО: Правильный эндпоинт min-api для получения JSON данных
+# ИСПРАВЛЕНО: Чистый JSON-эндпоинт без HTML-страниц
 API_URL = "https://cryptocompare.com"
 
 bot = Bot(token=BOT_TOKEN)
@@ -35,15 +34,13 @@ async def scan_market():
                     if response.status == 200:
                         data = await response.json()
                         
-                        # ИСПРАВЛЕНО: Безопасное извлечение из структуры ответа min-api
+                        # Безопасное извлечение цен из структуры JSON ответа
                         raw_btc = data.get("BTC", {}).get("USDT", 0)
                         raw_eth = data.get("ETH", {}).get("USDT", 0)
-                        
-                        # Для Форекс-пар получаем их прямые курсы к USD
                         raw_eur = data.get("EUR", {}).get("USD", 0)
                         raw_gbp = data.get("GBP", {}).get("USD", 0)
                         
-                        # Для USD/JPY (так как в API идет JPY к USD, переворачиваем значение)
+                        # Для USD/JPY инвертируем котировку из JPY/USD обратно
                         raw_jpy_usd = data.get("JPY", {}).get("USD", 0)
                         raw_jpy = 1 / raw_jpy_usd if raw_jpy_usd > 0 else 0
 
@@ -58,10 +55,11 @@ async def scan_market():
                         for asset, price in mappings.items():
                             if price > 0:
                                 price_history[asset].append(price)
+                                # Ограничиваем историю 30 тиками для экономии памяти
                                 if len(price_history[asset]) > 30:
                                     price_history[asset].pop(0)
                                 
-                                # Если накопилось достаточно тиков для анализа (минимум 15)
+                                # Запускаем анализ, если накопилось минимум 15 точек
                                 if len(price_history[asset]) >= 15:
                                     await check_pocket_signals(asset)
                                     
@@ -75,21 +73,29 @@ async def scan_market():
             await asyncio.sleep(10) 
 
 async def check_pocket_signals(asset):
+    # Создаем датафрейм
     df = pd.DataFrame(price_history[asset], columns=["close"])
     
-    # Расчет технических индикаторов
-    df["rsi"] = ta.momentum.rsi(df["close"], window=10)
-    indicator_bb = ta.trend.BollingerBands(close=df["close"], window=14, window_dev=2)
-    df["bb_high"] = indicator_bb.bollinger_hband()
-    df["bb_low"] = indicator_bb.bollinger_lband()
+    # 1. Расчет Боллинджера (Окно 14, 2 отклонения) на чистом pandas
+    df["ma"] = df["close"].rolling(window=14).mean()
+    df["std"] = df["close"].rolling(window=14).std()
+    df["bb_high"] = df["ma"] + (df["std"] * 2)
+    df["bb_low"] = df["ma"] - (df["std"] * 2)
+    
+    # 2. Расчет RSI (Окно 10) на чистом pandas
+    delta = df["close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=10).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=10).mean()
+    rs = gain / loss
+    df["rsi"] = 100 - (100 / (1 + rs))
     
     last = df.iloc[-1]
     
-    # Защита от пустых значений на этапе заполнения истории
+    # Игнорируем расчеты, если индикаторы еще не полностью посчитались (содержат NaN)
     if pd.isna(last["rsi"]) or pd.isna(last["bb_low"]) or pd.isna(last["bb_high"]):
         return
 
-    # 🟢 СИГНАЛ ВВЕРХ (CALL) — цена упала до минимума и отскакивает
+    # 🟢 СИГНАЛ ВВЕРХ (CALL) — цена коснулась нижней ленты и RSI в зоне перепроданности
     if last["close"] <= last["bb_low"] and last["rsi"] < 35:
         await send_to_all(
             f"🟢 **POCKET OPTION: CALL (ВВЕРХ)**\n\n"
@@ -98,7 +104,7 @@ async def check_pocket_signals(asset):
             f"⏳ Экспирация: **1-3 МИНУТЫ**\n"
             f"📊 Точность сигнала: Высокая 🔥"
         )
-    # 🔴 СИГНАЛ ВНИЗ (PUT) — цена взлетела до максимума и разворачивается
+    # 🔴 СИГНАЛ ВНИЗ (PUT) — цена коснулась верхней ленты и RSI в зоне перекупленности
     elif last["close"] >= last["bb_high"] and last["rsi"] > 65:
         await send_to_all(
             f"🔴 **POCKET OPTION: PUT (ВНИЗ)**\n\n"
@@ -124,6 +130,7 @@ async def cmd_start(message: types.Message):
     )
 
 async def main():
+    # Полный сброс старых вебхуков и зависших сессий Telegram
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(scan_market())
     await dp.start_polling(bot)
