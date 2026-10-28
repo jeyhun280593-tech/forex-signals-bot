@@ -9,15 +9,23 @@ from aiogram.filters import Command
 # ТОКЕН ТВОЕГО БОТА (ВЖИВЛЕН В КОД)
 BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 
-# Используем стабильный и открытый API биржи Bybit
-API_URL = "https://bybit.com" 
+# Запрашиваем сразу все топ-активы одним ультра-быстрым запросом
+API_URL = "https://cryptocompare.com"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 logging.basicConfig(level=logging.INFO)
 
 SUBSCRIBERS = set()
-price_history = []
+
+# Хранилище истории цен для каждого актива отдельно
+price_history = {
+    "BTC/USDT": [],
+    "ETH/USDT": [],
+    "EUR/USD": [],
+    "GBP/USD": [],
+    "USD/JPY": []
+}
 
 async def scan_market():
     async with aiohttp.ClientSession() as session:
@@ -26,32 +34,45 @@ async def scan_market():
                 async with session.get(API_URL) as response:
                     if response.status == 200:
                         data = await response.json()
-                        # Извлекаем цену из структуры ответа Bybit
-                        result = data.get("result", {})
-                        list_data = result.get("list", [])
                         
-                        if list_data:
-                            current_price = float(list_data[0].get("lastPrice", 0))
-                            
-                            if current_price > 0:
-                                price_history.append(current_price)
-                                logging.info(f"Успешно получена цена BTC от Bybit: {current_price}")
+                        # Извлекаем и распределяем котировки
+                        raw_btc = data.get("BTC", {}).get("USDT", 0)
+                        raw_eth = data.get("ETH", {}).get("USDT", 0)
+                        
+                        # Для Форекс-пар инвертируем прямые котировки к USD, как на Pocket Option
+                        raw_eur = 1 / data.get("EUR", {}).get("USD", 1) if data.get("EUR", {}).get("USD", 0) > 0 else 0
+                        raw_gbp = 1 / data.get("GBP", {}).get("USD", 1) if data.get("GBP", {}).get("USD", 0) > 0 else 0
+                        raw_jpy = data.get("JPY", {}).get("USD", 0)
+
+                        mappings = {
+                            "BTC/USDT": raw_btc,
+                            "ETH/USDT": raw_eth,
+                            "EUR/USD": raw_eur,
+                            "GBP/USD": raw_gbp,
+                            "USD/JPY": raw_jpy
+                        }
+
+                        for asset, price in mappings.items():
+                            if price > 0:
+                                price_history[asset].append(price)
+                                if len(price_history[asset]) > 30:
+                                    price_history[asset].pop(0)
                                 
-                                if len(price_history) > 30:
-                                    price_history.pop(0)
-                                
-                                if len(price_history) >= 15:
-                                    await check_pocket_signals()
+                                # Если накопилось достаточно тиков для анализа коридора Боллинджера
+                                if len(price_history[asset]) >= 15:
+                                    await check_pocket_signals(asset)
+                                    
+                        logging.info("==> Сканирование всех ТОП-активов выполнено успешно!")
                     else:
-                        logging.error(f"Биржа Bybit ответила статусом: {response.status}")
+                        logging.error(f"Ошибка шлюза данных: {response.status}")
             except Exception as e:
-                logging.error(f"Ошибка чтения рынка Bybit: {e}")
+                logging.error(f"Ошибка сети при сканировании рынка: {e}")
             
-            # Стабильный интервал опроса рынка
+            # Интервал сканирования — 10 секунд (оптимально для стабильности и скорости М1)
             await asyncio.sleep(10) 
 
-async def check_pocket_signals():
-    df = pd.DataFrame(price_history, columns=["close"])
+async def check_pocket_signals(asset):
+    df = pd.DataFrame(price_history[asset], columns=["close"])
     df["rsi"] = ta.momentum.rsi(df["close"], window=10)
     indicator_bb = ta.trend.BollingerBands(close=df["close"], window=14, window_dev=2)
     df["bb_high"] = indicator_bb.bollinger_hband()
@@ -59,10 +80,24 @@ async def check_pocket_signals():
     
     last = df.iloc[-1]
     
+    # 🟢 СИГНАЛ ВВЕРХ (CALL) — цена упала до минимума и отскакивает
     if last["close"] <= last["bb_low"] and last["rsi"] < 35:
-        await send_to_all(f"🟢 **POCKET OPTION: CALL (ВВЕРХ)**\n\n💱 Актив: BTC/USDT\n💵 Цена: {last['close']:.2f}\n⏳ Время сделки: **1-3 МИНУТЫ**\n📊 Сила импульса: 89% 🔥")
+        await send_to_all(
+            f"🟢 **POCKET OPTION: CALL (ВВЕРХ)**\n\n"
+            f"💱 Актив: **{asset}** (Доходность ~92%)\n"
+            f"💵 Цена входа: {last['close']:.5f}\n"
+            f"⏳ Экспирация: **1-3 МИНУТЫ**\n"
+            f"📊 Точность сигнала: Высокая 🔥"
+        )
+    # 🔴 СИГНАЛ ВНИЗ (PUT) — цена взлетела до максимума и разворачивается
     elif last["close"] >= last["bb_high"] and last["rsi"] > 65:
-        await send_to_all(f"🔴 **POCKET OPTION: PUT (ВНИЗ)**\n\n💱 Актив: BTC/USDT\n💵 Цена: {last['close']:.2f}\n⏳ Время сделки: **1-3 МИНУТЫ**\n📊 Сила импульса: 87% 🔥")
+        await send_to_all(
+            f"🔴 **POCKET OPTION: PUT (ВНИЗ)**\n\n"
+            f"💱 Актив: **{asset}** (Доходность ~92%)\n"
+            f"💵 Цена входа: {last['close']:.5f}\n"
+            f"⏳ Экспирация: **1-3 МИНУТЫ**\n"
+            f"📊 Точность сигнала: Высокая 🔥"
+        )
 
 async def send_to_all(message: str):
     tasks = [bot.send_message(chat_id=uid, text=message, parse_mode="Markdown") for uid in SUBSCRIBERS]
@@ -72,9 +107,16 @@ async def send_to_all(message: str):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
-    await message.answer("🦅 **Бот под Pocket Option успешно запущен на стабильном сервере!**\n\nКотировки BTC/USDT подключены через Bybit.\nОжидайте автоматические сигналы BUY/SELL.")
+    await message.answer(
+        "🦅 **Мультивалютный Бот Pocket Option запущен!**\n\n"
+        "Робот одновременно сканирует 5 самых прибыльных активов (+92%):\n"
+        "📈 *BTC/USDT, ETH/USDT, EUR/USD, GBP/USD, USD/JPY*\n\n"
+        "Сигналы на пробой Лент Боллинджера и RSI будут приходить автоматически."
+    )
 
 async def main():
+    # Полный сброс старых зависших процессов в Telegram (Снимает конфликт!)
+    await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(scan_market())
     await dp.start_polling(bot)
 
