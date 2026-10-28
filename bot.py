@@ -6,8 +6,8 @@ import ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# ТОКЕН ТВОЕГО БОТА (Он у тебя уже прописан, не забудь вставить его сюда снова!)
-BOT_TOKEN = "9193718167:A..." # Вставь сюда свой токен полностью!
+# ТОКЕН ТВОЕГО БОТА (ВЖИВЛЕН В КОД)
+BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 
 # Используем профессиональный и стабильный API Binance (криптовалютный мейнстрим для Pocket Option)
 API_URL = "https://binance.com" 
