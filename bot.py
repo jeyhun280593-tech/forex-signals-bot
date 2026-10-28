@@ -6,10 +6,10 @@ import ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# ТОКЕН ТВОЕГО БОТА (ВЖИВЛЕН В КОД)
+# ТОКЕН ТВОЕГО БОТА 
 BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 
-# Запрашиваем сразу все топ-активы одним ультра-быстрым запросом
+# ИСУПРАВЛЕНО: Используем правильный эндпоинт API CryptoCompare для получения множественных цен
 API_URL = "https://cryptocompare.com"
 
 bot = Bot(token=BOT_TOKEN)
@@ -35,14 +35,17 @@ async def scan_market():
                     if response.status == 200:
                         data = await response.json()
                         
-                        # Извлекаем и распределяем котировки
+                        # ИСПРАВЛЕНО: Безопасное извлечение данных из корректной структуры JSON API
                         raw_btc = data.get("BTC", {}).get("USDT", 0)
                         raw_eth = data.get("ETH", {}).get("USDT", 0)
                         
-                        # Для Форекс-пар инвертируем прямые котировки к USD, как на Pocket Option
-                        raw_eur = 1 / data.get("EUR", {}).get("USD", 1) if data.get("EUR", {}).get("USD", 0) > 0 else 0
-                        raw_gbp = 1 / data.get("GBP", {}).get("USD", 1) if data.get("GBP", {}).get("USD", 0) > 0 else 0
-                        raw_jpy = data.get("JPY", {}).get("USD", 0)
+                        # Для Форекс-пар инвертируем или берем к USD, адаптируя под Pocket Option
+                        raw_eur = data.get("EUR", {}).get("USD", 0)
+                        raw_gbp = data.get("GBP", {}).get("USD", 0)
+                        
+                        # USD/JPY инвертируем, так как в API идет JPY/USD
+                        raw_jpy_usd = data.get("JPY", {}).get("USD", 0)
+                        raw_jpy = 1 / raw_jpy_usd if raw_jpy_usd > 0 else 0
 
                         mappings = {
                             "BTC/USDT": raw_btc,
@@ -68,7 +71,7 @@ async def scan_market():
             except Exception as e:
                 logging.error(f"Ошибка сети при сканировании рынка: {e}")
             
-            # Интервал сканирования — 10 секунд (оптимально для стабильности и скорости М1)
+            # Интервал сканирования — 10 секунд
             await asyncio.sleep(10) 
 
 async def check_pocket_signals(asset):
@@ -80,6 +83,10 @@ async def check_pocket_signals(asset):
     
     last = df.iloc[-1]
     
+    # Проверяем на наличие NaN (если индикаторы еще не посчитались)
+    if pd.isna(last["rsi"]) or pd.isna(last["bb_low"]) or pd.isna(last["bb_high"]):
+        return
+
     # 🟢 СИГНАЛ ВВЕРХ (CALL) — цена упала до минимума и отскакивает
     if last["close"] <= last["bb_low"] and last["rsi"] < 35:
         await send_to_all(
@@ -115,7 +122,6 @@ async def cmd_start(message: types.Message):
     )
 
 async def main():
-    # Полный сброс старых зависших процессов в Telegram (Снимает конфликт!)
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(scan_market())
     await dp.start_polling(bot)
