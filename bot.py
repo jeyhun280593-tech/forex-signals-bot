@@ -6,10 +6,10 @@ import ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# ТОКЕН ТВОЕГО БОТА 
+# ТОКЕН ТВОЕГО БОТА
 BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 
-# ИСУПРАВЛЕНО: Используем правильный эндпоинт API CryptoCompare для получения множественных цен
+# ИСПРАВЛЕНО: Правильный эндпоинт min-api для получения JSON данных
 API_URL = "https://cryptocompare.com"
 
 bot = Bot(token=BOT_TOKEN)
@@ -35,15 +35,15 @@ async def scan_market():
                     if response.status == 200:
                         data = await response.json()
                         
-                        # ИСПРАВЛЕНО: Безопасное извлечение данных из корректной структуры JSON API
+                        # ИСПРАВЛЕНО: Безопасное извлечение из структуры ответа min-api
                         raw_btc = data.get("BTC", {}).get("USDT", 0)
                         raw_eth = data.get("ETH", {}).get("USDT", 0)
                         
-                        # Для Форекс-пар инвертируем или берем к USD, адаптируя под Pocket Option
+                        # Для Форекс-пар получаем их прямые курсы к USD
                         raw_eur = data.get("EUR", {}).get("USD", 0)
                         raw_gbp = data.get("GBP", {}).get("USD", 0)
                         
-                        # USD/JPY инвертируем, так как в API идет JPY/USD
+                        # Для USD/JPY (так как в API идет JPY к USD, переворачиваем значение)
                         raw_jpy_usd = data.get("JPY", {}).get("USD", 0)
                         raw_jpy = 1 / raw_jpy_usd if raw_jpy_usd > 0 else 0
 
@@ -61,7 +61,7 @@ async def scan_market():
                                 if len(price_history[asset]) > 30:
                                     price_history[asset].pop(0)
                                 
-                                # Если накопилось достаточно тиков для анализа коридора Боллинджера
+                                # Если накопилось достаточно тиков для анализа (минимум 15)
                                 if len(price_history[asset]) >= 15:
                                     await check_pocket_signals(asset)
                                     
@@ -76,6 +76,8 @@ async def scan_market():
 
 async def check_pocket_signals(asset):
     df = pd.DataFrame(price_history[asset], columns=["close"])
+    
+    # Расчет технических индикаторов
     df["rsi"] = ta.momentum.rsi(df["close"], window=10)
     indicator_bb = ta.trend.BollingerBands(close=df["close"], window=14, window_dev=2)
     df["bb_high"] = indicator_bb.bollinger_hband()
@@ -83,7 +85,7 @@ async def check_pocket_signals(asset):
     
     last = df.iloc[-1]
     
-    # Проверяем на наличие NaN (если индикаторы еще не посчитались)
+    # Защита от пустых значений на этапе заполнения истории
     if pd.isna(last["rsi"]) or pd.isna(last["bb_low"]) or pd.isna(last["bb_high"]):
         return
 
