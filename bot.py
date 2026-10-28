@@ -9,8 +9,8 @@ from aiogram.filters import Command
 # ТОКЕН ТВОЕГО БОТА (ВЖИВЛЕН В КОД)
 BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 
-# Используем альтернативный, более защищенный шлюз Binance API
-API_URL = "https://binance.com" 
+# Используем стабильный и открытый API биржи Bybit
+API_URL = "https://bybit.com" 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -26,26 +26,28 @@ async def scan_market():
                 async with session.get(API_URL) as response:
                     if response.status == 200:
                         data = await response.json()
-                        current_price = float(data.get("price", 0))
+                        # Извлекаем цену из структуры ответа Bybit
+                        result = data.get("result", {})
+                        list_data = result.get("list", [])
                         
-                        if current_price > 0:
-                            price_history.append(current_price)
-                            logging.info(f"Получена цена BTC: {current_price}")
+                        if list_data:
+                            current_price = float(list_data[0].get("lastPrice", 0))
                             
-                            if len(price_history) > 30:
-                                price_history.pop(0)
-                            
-                            if len(price_history) >= 15:
-                                await check_pocket_signals()
-                    elif response.status == 429:
-                        logging.warning("Биржа просит снизить скорость. Ожидаем паузу...")
-                        await asyncio.sleep(20)
+                            if current_price > 0:
+                                price_history.append(current_price)
+                                logging.info(f"Успешно получена цена BTC от Bybit: {current_price}")
+                                
+                                if len(price_history) > 30:
+                                    price_history.pop(0)
+                                
+                                if len(price_history) >= 15:
+                                    await check_pocket_signals()
                     else:
-                        logging.error(f"Биржа ответила статусом: {response.status}")
+                        logging.error(f"Биржа Bybit ответила статусом: {response.status}")
             except Exception as e:
-                logging.error(f"Ошибка чтения рынка: {e}")
+                logging.error(f"Ошибка чтения рынка Bybit: {e}")
             
-            # Безопасный интервал для обхода блокировок 429
+            # Стабильный интервал опроса рынка
             await asyncio.sleep(10) 
 
 async def check_pocket_signals():
@@ -70,7 +72,7 @@ async def send_to_all(message: str):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
-    await message.answer("🦅 **Бот под Pocket Option успешно запущен на стабильном сервере!**\n\nКотировки BTC/USDT подключены.\nОжидайте автоматические сигналы BUY/SELL.")
+    await message.answer("🦅 **Бот под Pocket Option успешно запущен на стабильном сервере!**\n\nКотировки BTC/USDT подключены через Bybit.\nОжидайте автоматические сигналы BUY/SELL.")
 
 async def main():
     asyncio.create_task(scan_market())
