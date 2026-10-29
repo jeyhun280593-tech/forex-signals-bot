@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 SUBSCRIBERS = set()
 
-# Храним только цены закрытия (float)
+# Храним цены закрытия
 price_history = {
     "BTC/USDT": [],
     "ETH/USDT": [],
@@ -31,7 +31,6 @@ price_history = {
     "DOGE/USDT": []
 }
 
-# ЧИСТЫЙ PYTHON: Расчет RSI без библиотек
 def calculate_rsi(prices, period=5):
     if len(prices) < period + 1:
         return None
@@ -48,25 +47,20 @@ def calculate_rsi(prices, period=5):
     rs = gains / losses
     return 100 - (100 / (1 + rs))
 
-# ЧИСТЫЙ PYTHON: Расчет Bollinger Bands без библиотек
 def calculate_bollinger(prices, period=10, dev=1.8):
     if len(prices) < period:
         return None, None
-    
-    # Берем срез последних N цен
     sma_prices = prices[-period:]
     sma = sum(sma_prices) / period
-    
-    # Считаем стандартное отклонение
     variance = sum((x - sma) ** 2 for x in sma_prices) / period
     std_dev = math.sqrt(variance)
-    
     bb_high = sma + (dev * std_dev)
     bb_low = sma - (dev * std_dev)
     return bb_high, bb_low
 
+# Исправленный фоновый сканер рынка
 async def scan_market():
-    await asyncio.sleep(5)
+    logging.info("==> Фоновый сканер рынка успешно инициализирован.")
     async with aiohttp.ClientSession() as session:
         while True:
             try:
@@ -77,31 +71,25 @@ async def scan_market():
                         for ticker in crypto_data:
                             sym = ticker.get("symbol")
                             val = float(ticker.get("price", 0))
-                            
                             asset = f"{sym[:-4]}/{sym[-4:]}"
                             
                             if asset in price_history:
                                 price_history[asset].append(val)
-                                
                                 if len(price_history[asset]) > 25:
                                     price_history[asset].pop(0)
                                     
-                                # Запускаем анализ, если накопилось 12 точек
                                 if len(price_history[asset]) >= 12:
                                     await check_pocket_signals(asset)
                                 
                         logging.info("==> Мульти-Скальпинг S5: Котировки обновлены.")
-                
             except Exception as e:
-                logging.error(f"Ошибка в мульти-сканере: {e}")
+                logging.error(f"Ошибка в сканере рынка: {e}")
             
             await asyncio.sleep(5) 
 
 async def check_pocket_signals(asset):
     try:
         prices = price_history[asset]
-        
-        # Считаем индикаторы через наши быстрые функции
         rsi = calculate_rsi(prices, period=5)
         bb_high, bb_low = calculate_bollinger(prices, period=10, dev=1.8)
         
@@ -110,7 +98,6 @@ async def check_pocket_signals(asset):
 
         last_price = prices[-1]
 
-        # Сигналы на 10-секундный импульс (RSI 35/65, Боллинджер 1.8)
         if last_price <= bb_low and rsi < 35:
             await send_to_all(
                 f"🚨 **POCKET OPTION: CALL (ВВЕРХ)**\n\n"
@@ -121,7 +108,7 @@ async def check_pocket_signals(asset):
             )
         elif last_price >= bb_high and rsi > 65:
             await send_to_all(
-                f"🚨 **POCKET OPTION: PUT (ВНИЗ)**\n\n"
+                f"🔴 **POCKET OPTION: PUT (ВНИЗ)**\n\n"
                 f"💱 Пара: **{asset}** [Таймфрейм: **S5**]\n"
                 f"💵 Вход: `{last_price:.4f}`\n"
                 f"⚡ RSI: `{rsi:.1f}`\n"
@@ -140,8 +127,8 @@ async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
     await message.answer(
         "🦅 **Сверхбыстрый Мульти-Бот [7 активов / 10 секунд] активирован!**\n\n"
-        "Индикаторы переведены на прямое математическое вычисление ядра. "
-        "Сигналы начнут поступать в течение 1-2 минут после сборки контейнера Render!"
+        "Индикаторы запущены напрямую через ядро диспетчера. Логи котировок запущены. "
+        "Сигналы начнут поступать в течение 1-2 минут!"
     )
 
 async def handle_ping(request):
@@ -157,10 +144,15 @@ async def start_web_server():
     await site.start()
     logging.info(f"==> Веб-порт {port} успешно открыт для Render.")
 
+# ИСПРАВЛЕНО: Функция, которая принудительно включает сканер рынка вместе со стартом бота
+async def on_startup_handler(dispatcher):
+    asyncio.create_task(scan_market())
+
 async def main():
     await start_web_server()
-    asyncio.create_task(scan_market())
-    # Запускаем чистый пуллинг aiogram 3 без конфликтов вебхуков
+    # Регистрируем автоматический триггер запуска сканера рынка
+    dp.startup.register(on_startup_handler)
+    # Запускаем пуллинг
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
