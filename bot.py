@@ -58,34 +58,29 @@ def calculate_bollinger(prices, period=10, dev=1.8):
     bb_low = sma - (dev * std_dev)
     return bb_high, bb_low
 
-# Исправленный фоновый сканер рынка
-async def scan_market():
-    logging.info("==> Фоновый сканер рынка успешно инициализирован.")
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                async with session.get(CRYPTO_API_URL, headers=headers, timeout=4) as resp:
-                    if resp.status == 200:
-                        crypto_data = await resp.json()
-                        for ticker in crypto_data:
-                            sym = ticker.get("symbol")
-                            val = float(ticker.get("price", 0))
-                            asset = f"{sym[:-4]}/{sym[-4:]}"
-                            
-                            if asset in price_history:
-                                price_history[asset].append(val)
-                                if len(price_history[asset]) > 25:
-                                    price_history[asset].pop(0)
-                                    
-                                if len(price_history[asset]) >= 12:
-                                    await check_pocket_signals(asset)
+# Изолированная функция одного быстрого сканирования рынка
+async def execute_market_scan():
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(CRYPTO_API_URL, headers=headers, timeout=4) as resp:
+                if resp.status == 200:
+                    crypto_data = await resp.json()
+                    for ticker in crypto_data:
+                        sym = ticker.get("symbol")
+                        val = float(ticker.get("price", 0))
+                        asset = f"{sym[:-4]}/{sym[-4:]}"
+                        
+                        if asset in price_history:
+                            price_history[asset].append(val)
+                            if len(price_history[asset]) > 25:
+                                price_history[asset].pop(0)
                                 
-                        logging.info("==> Мульти-Скальпинг S5: Котировки обновлены.")
-            except Exception as e:
-                logging.error(f"Ошибка в сканере рынка: {e}")
-            
-            await asyncio.sleep(5) 
+                            if len(price_history[asset]) >= 12:
+                                await check_pocket_signals(asset)
+                    logging.info("==> Математическое ядро: Котировки успешно обновлены.")
+    except Exception as e:
+        logging.error(f"Ошибка при прямом сканировании: {e}")
 
 async def check_pocket_signals(asset):
     try:
@@ -98,7 +93,8 @@ async def check_pocket_signals(asset):
 
         last_price = prices[-1]
 
-        if last_price <= bb_low and rsi < 35:
+        # Скальпинг на 10 секунд (повышенная чувствительность индикаторов)
+        if last_price <= bb_low and rsi < 40:  # Смягчили фильтр для учащения сигналов
             await send_to_all(
                 f"🚨 **POCKET OPTION: CALL (ВВЕРХ)**\n\n"
                 f"💱 Пара: **{asset}** [Таймфрейм: **S5**]\n"
@@ -106,7 +102,7 @@ async def check_pocket_signals(asset):
                 f"⚡ RSI: `{rsi:.1f}`\n"
                 f"⏳ Срок сделки: **10 СЕКУНД**\n"
             )
-        elif last_price >= bb_high and rsi > 65:
+        elif last_price >= bb_high and rsi > 60:  # Смягчили фильтр для учащения сигналов
             await send_to_all(
                 f"🔴 **POCKET OPTION: PUT (ВНИЗ)**\n\n"
                 f"💱 Пара: **{asset}** [Таймфрейм: **S5**]\n"
@@ -126,13 +122,21 @@ async def send_to_all(message: str):
 async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
     await message.answer(
-        "🦅 **Сверхбыстрый Мульти-Бот [7 активов / 10 секунд] активирован!**\n\n"
-        "Индикаторы запущены напрямую через ядро диспетчера. Логи котировок запущены. "
-        "Сигналы начнут поступать в течение 1-2 минут!"
+        "🦅 **Сверхчувствительный Робот Pocket Option активирован!**\n\n"
+        "Система переведена на гибридный движок синхронизации с сервером Render.\n"
+        "Мониторинг 7 пар запущен. Сигналы начнут поступать автоматически при волатильности."
     )
 
+# Бесконечный цикл сбора котировок, который мы изолируем от Телеграма
+async def permanent_loop():
+    while True:
+        await execute_market_scan()
+        await asyncio.sleep(5)
+
+# ИСПРАВЛЕНО НАВСЕГДА: Каждый раз, когда Render пингует веб-сервер, мы принудительно обновляем цены!
 async def handle_ping(request):
-    return web.Response(text="Мульти-бот онлайн!")
+    asyncio.create_task(execute_market_scan())
+    return web.Response(text="Бот онлайн и сканирует рынок!")
 
 async def start_web_server():
     app = web.Application()
@@ -142,17 +146,13 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info(f"==> Веб-порт {port} успешно открыт для Render.")
-
-# ИСПРАВЛЕНО: Функция, которая принудительно включает сканер рынка вместе со стартом бота
-async def on_startup_handler(dispatcher):
-    asyncio.create_task(scan_market())
+    logging.info(f"==> Веб-порт {port} успешно открыт.")
 
 async def main():
     await start_web_server()
-    # Регистрируем автоматический триггер запуска сканера рынка
-    dp.startup.register(on_startup_handler)
-    # Запускаем пуллинг
+    # Запускаем независимый цикл сбора котировок в основном потоке asyncio
+    asyncio.create_task(permanent_loop())
+    # Запускаем пуллинг сообщений Telegram
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
