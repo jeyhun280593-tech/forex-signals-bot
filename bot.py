@@ -5,6 +5,7 @@ import math
 import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
 # ТОКЕН ТВОЕГО БОТА
@@ -13,10 +14,16 @@ BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 # 7 стабильных пар с Binance
 CRYPTO_API_URL = "https://binance.com"
 
+# Конфигурация Webhook для Render
+# Render автоматически подставляет домен вашего приложения в переменную RENDER_EXTERNAL_URL
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-logging.basicConfig(level=logging.INFO, format='%asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 SUBSCRIBERS = set()
 
@@ -62,7 +69,6 @@ async def scan_market():
     logging.info("==> Фоновый сканер рынка успешно запущен.")
     while True:
         try:
-            # ИСПРАВЛЕНО: Сессия открывается внутри контекстного менеджера, предотвращая 'Unclosed client session'
             async with aiohttp.ClientSession() as session:
                 headers = {"User-Agent": "Mozilla/5.0"}
                 async with session.get(CRYPTO_API_URL, headers=headers, timeout=4) as resp:
@@ -71,6 +77,8 @@ async def scan_market():
                         for ticker in crypto_data:
                             sym = ticker.get("symbol")
                             val = float(ticker.get("price", 0))
+                            if not sym:
+                                continue
                             asset = f"{sym[:-4]}/{sym[-4:]}"
                             
                             if asset in price_history:
@@ -127,37 +135,36 @@ async def send_to_all(message: str):
 async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
     await message.answer(
-        "🦅 **Робот Pocket Option [7 активов / 10 секунд] запущен на сервере!**\n\n"
-        "Все ошибки сессий устранены. Я круглосуточно сканирую рынок Binance и готов слать сигналы при пробоях."
+        "🦅 **Робот Pocket Option [7 активов / 10 секунд] запущен через Webhook!**\n\n"
+        "Конфликты процессов полностью устранены. Я круглосуточно сканирую рынок Binance и готов слать сигналы."
     )
 
-async def handle_ping(request):
-    return web.Response(text="Бот онлайн!")
+async def on_startup(bot: Bot) -> None:
+    # При запуске контейнера принудительно регистрируем вебхук в Telegram
+    logging.info(f"Установка Webhook на адрес: {WEBHOOK_URL}")
+    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
 
-async def start_web_server():
+def main():
+    # Регистрируем событие старта приложения
+    dp.startup.register(on_startup)
+    
+    # Создаем aiohttp приложение, которое будет принимать и запросы от Render, и сообщения от Telegram
     app = web.Application()
-    app.router.add_get("/", handle_ping)
-    port = int(os.environ.get("PORT", 8080))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logging.info(f"==> Веб-порт {port} успешно открыт для Render.")
-
-async def main():
-    # ИСПРАВЛЕНО: Безопасное удаление старых вебхуков без жесткого закрытия всего бота
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-    except Exception as e:
-        logging.warning(f"Не удалось удалить вебхук при старте: {e}")
-        
-    await start_web_server()
     
-    # Запускаем фоновую задачу сканирования рынка
-    asyncio.create_task(scan_market())
+    # Обработчик вебхуков aiogram
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
     
-    logging.info("Запуск чистого пуллинга сообщений...")
-    await dp.start_polling(bot, skip_updates=True)
+    # Запускаем фоновый парсер котировок параллельно серверу
+    asyncio.get_event_loop().create_task(scan_market())
+    
+    # Указываем порт, который выдает Render (по умолчанию 10000 для Web Service)
+    port = int(os.environ.get("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
