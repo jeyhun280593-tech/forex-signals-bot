@@ -11,7 +11,7 @@ from aiohttp import web
 # ТОКЕН ТВОЕГО БОТА
 BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 
-# По-прежнему используем стабильный API Binance
+# ИСПРАВЛЕНО: Расширенный список ультра-стабильных пар с Binance (Крипта + Топовые альткоины)
 CRYPTO_API_URL = "https://binance.com"
 
 bot = Bot(token=BOT_TOKEN)
@@ -20,9 +20,16 @@ dp = Dispatcher()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 SUBSCRIBERS = set()
+
+# Автоматически создаем историю под все 7 активов
 price_history = {
     "BTC/USDT": [],
-    "ETH/USDT": []
+    "ETH/USDT": [],
+    "SOL/USDT": [],
+    "XRP/USDT": [],
+    "BNB/USDT": [],
+    "ADA/USDT": [],
+    "DOGE/USDT": []
 }
 
 async def scan_market():
@@ -39,32 +46,35 @@ async def scan_market():
                             sym = ticker.get("symbol")
                             val = float(ticker.get("price", 0))
                             
-                            asset = "BTC/USDT" if sym == "BTCUSDT" else "ETH/USDT"
-                            price_history[asset].append(val)
+                            # Преобразуем формат Binance (BTCUSDT) в формат бота (BTC/USDT)
+                            asset = f"{sym[:-4]}/{sym[-4:]}"
                             
-                            # Для быстрых свечей держим историю из 30 баров
-                            if len(price_history[asset]) > 30:
-                                price_history[asset].pop(0)
+                            if asset in price_history:
+                                price_history[asset].append(val)
                                 
-                            # Начинаем анализ, когда накопилось 12 микро-свечей
-                            if len(price_history[asset]) >= 12:
-                                await check_pocket_signals(asset)
+                                # Ограничение буфера для скальпинга S5
+                                if len(price_history[asset]) > 30:
+                                    price_history[asset].pop(0)
+                                    
+                                # Запуск анализа при накоплении базы данных
+                                if len(price_history[asset]) >= 12:
+                                    await check_pocket_signals(asset)
                                 
-                logging.info("==> Скальпинг S5: Микро-котировки обновлены.")
+                logging.info("==> Мульти-Скальпинг S5: Все 7 котировок успешно обновлены.")
                 
             except Exception as e:
-                logging.error(f"Ошибка в быстром сканере: {e}")
+                logging.error(f"Ошибка в мульти-сканере: {e}")
             
-            # ИСПРАВЛЕНО: Опрос рынка каждые 5 секунд для формирования таймфрейма S5!
+            # Таймфрейм свечи — 5 секунд
             await asyncio.sleep(5) 
 
 async def check_pocket_signals(asset):
     try:
         df = pd.DataFrame(price_history[asset], columns=["close"])
         
-        # Оптимизированные быстрые индикаторы для микро-скальпинга
-        df["rsi"] = ta.momentum.rsi(df["close"], window=5)  # Быстрый RSI
-        indicator_bb = ta.trend.BollingerBands(close=df["close"], window=10, window_dev=2) # Чувствительный Боллинджер
+        # Индикаторы для секундных импульсов
+        df["rsi"] = ta.momentum.rsi(df["close"], window=5)
+        indicator_bb = ta.trend.BollingerBands(close=df["close"], window=10, window_dev=2)
         df["bb_high"] = indicator_bb.bollinger_hband()
         df["bb_low"] = indicator_bb.bollinger_lband()
         
@@ -73,25 +83,25 @@ async def check_pocket_signals(asset):
         if pd.isna(last["rsi"]) or pd.isna(last["bb_low"]) or pd.isna(last["bb_high"]):
             return
 
-        # Сигналы на моментальный откат
-        if last["close"] <= last["bb_low"] and last["rsi"] < 25: # Более жесткий фильтр RSI для точности
+        # Сигналы на 10-секундный отскок
+        if last["close"] <= last["bb_low"] and last["rsi"] < 25:
             await send_to_all(
                 f"🚨 **POCKET OPTION: СКАЛЬПИНГ CALL (ВВЕРХ)**\n\n"
                 f"💱 Пара: **{asset}** [Таймфрейм: **S5**]\n"
-                f"💵 Вход: `{last['close']:.2f}`\n"
-                f"⚡ Критический RSI: `{last['rsi']:.1f}`\n"
+                f"💵 Вход: `{last['close']:.4f}`\n"
+                f"⚡ RSI: `{last['rsi']:.1f}`\n"
                 f"⏳ Срок сделки: **10 СЕКУНД**\n"
             )
-        elif last["close"] >= last["bb_high"] and last["rsi"] > 75: # Более жесткий фильтр RSI
+        elif last["close"] >= last["bb_high"] and last["rsi"] > 75:
             await send_to_all(
                 f"🚨 **POCKET OPTION: СКАЛЬПИНГ PUT (ВНИЗ)**\n\n"
                 f"💱 Пара: **{asset}** [Таймфрейм: **S5**]\n"
-                f"💵 Вход: `{last['close']:.2f}`\n"
-                f"⚡ Критический RSI: `{last['rsi']:.1f}`\n"
+                f"💵 Вход: `{last['close']:.4f}`\n"
+                f"⚡ RSI: `{last['rsi']:.1f}`\n"
                 f"⏳ Срок сделки: **10 СЕКУНД**\n"
             )
     except Exception as e:
-        logging.error(f"Ошибка индикаторов на S5 для {asset}: {e}")
+        logging.error(f"Ошибка индикаторов для {asset}: {e}")
 
 async def send_to_all(message: str):
     tasks = [bot.send_message(chat_id=uid, text=message, parse_mode="Markdown") for uid in SUBSCRIBERS]
@@ -102,13 +112,14 @@ async def send_to_all(message: str):
 async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
     await message.answer(
-        "⚡ **Бот Pocket Option [Микро-скальпинг 10с] активирован!**\n\n"
-        "Анализирую секундные импульсы BTC и ETH с Binance. "
-        "При резком выносе цены за пределы Лент Боллинджера выдам сигнал на **10 секунд**."
+        "🦅 **Мульти-Бот Pocket Option [7 активов / 10 секунд] запущен!**\n\n"
+        "Мониторю пары: BTC, ETH, SOL, XRP, BNB, ADA, DOGE.\n"
+        "График: S5 (5 секунд). Экспирация сделки: 10 секунд.\n"
+        "Сигналы на пробой импульса начнут поступать автоматически."
     )
 
 async def handle_ping(request):
-    return web.Response(text="Бот онлайн!")
+    return web.Response(text="Мульти-бот онлайн!")
 
 async def start_web_server():
     app = web.Application()
