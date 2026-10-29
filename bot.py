@@ -11,7 +11,7 @@ from aiohttp import web
 # ТОКЕН ТВОЕГО БОТА
 BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 
-# ИСПРАВЛЕНО: Только сверхстабильный и надежный API Binance без сторонних фиатных сайтов
+# По-прежнему используем стабильный API Binance
 CRYPTO_API_URL = "https://binance.com"
 
 bot = Bot(token=BOT_TOKEN)
@@ -32,39 +32,39 @@ async def scan_market():
             try:
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
                 
-                # Запрос криптовалюты с Binance
-                async with session.get(CRYPTO_API_URL, headers=headers, timeout=8) as resp:
+                async with session.get(CRYPTO_API_URL, headers=headers, timeout=4) as resp:
                     if resp.status == 200:
                         crypto_data = await resp.json()
                         for ticker in crypto_data:
                             sym = ticker.get("symbol")
                             val = float(ticker.get("price", 0))
-                            if sym == "BTCUSDT":
-                                price_history["BTC/USDT"].append(val)
-                            elif sym == "ETHUSDT":
-                                price_history["ETH/USDT"].append(val)
-
-                # Анализ накопленных данных
-                for asset in price_history.keys():
-                    if len(price_history[asset]) > 35:
-                        price_history[asset].pop(0)
-                    
-                    if len(price_history[asset]) >= 15:
-                        await check_pocket_signals(asset)
-                        
-                logging.info("==> Мониторинг рынка: Котировки BTC и ETH успешно обновлены.")
+                            
+                            asset = "BTC/USDT" if sym == "BTCUSDT" else "ETH/USDT"
+                            price_history[asset].append(val)
+                            
+                            # Для быстрых свечей держим историю из 30 баров
+                            if len(price_history[asset]) > 30:
+                                price_history[asset].pop(0)
+                                
+                            # Начинаем анализ, когда накопилось 12 микро-свечей
+                            if len(price_history[asset]) >= 12:
+                                await check_pocket_signals(asset)
+                                
+                logging.info("==> Скальпинг S5: Микро-котировки обновлены.")
                 
             except Exception as e:
-                logging.error(f"Ошибка получения данных рынка: {e}")
+                logging.error(f"Ошибка в быстром сканере: {e}")
             
-            # Проверка каждые 12 секунд
-            await asyncio.sleep(12) 
+            # ИСПРАВЛЕНО: Опрос рынка каждые 5 секунд для формирования таймфрейма S5!
+            await asyncio.sleep(5) 
 
 async def check_pocket_signals(asset):
     try:
         df = pd.DataFrame(price_history[asset], columns=["close"])
-        df["rsi"] = ta.momentum.rsi(df["close"], window=10)
-        indicator_bb = ta.trend.BollingerBands(close=df["close"], window=14, window_dev=2)
+        
+        # Оптимизированные быстрые индикаторы для микро-скальпинга
+        df["rsi"] = ta.momentum.rsi(df["close"], window=5)  # Быстрый RSI
+        indicator_bb = ta.trend.BollingerBands(close=df["close"], window=10, window_dev=2) # Чувствительный Боллинджер
         df["bb_high"] = indicator_bb.bollinger_hband()
         df["bb_low"] = indicator_bb.bollinger_lband()
         
@@ -73,23 +73,25 @@ async def check_pocket_signals(asset):
         if pd.isna(last["rsi"]) or pd.isna(last["bb_low"]) or pd.isna(last["bb_high"]):
             return
 
-        # Сигналы пробоя Боллинджера + фильтр RSI
-        if last["close"] <= last["bb_low"] and last["rsi"] < 35:
+        # Сигналы на моментальный откат
+        if last["close"] <= last["bb_low"] and last["rsi"] < 25: # Более жесткий фильтр RSI для точности
             await send_to_all(
-                f"🟢 **POCKET OPTION: CALL (ВВЕРХ)**\n\n"
-                f"💱 Пара: **{asset}**\n"
-                f"💵 Вход: {last['close']:.2f}\n"
-                f"⏳ Срок: **1-3 МИНУТЫ**\n"
+                f"🚨 **POCKET OPTION: СКАЛЬПИНГ CALL (ВВЕРХ)**\n\n"
+                f"💱 Пара: **{asset}** [Таймфрейм: **S5**]\n"
+                f"💵 Вход: `{last['close']:.2f}`\n"
+                f"⚡ Критический RSI: `{last['rsi']:.1f}`\n"
+                f"⏳ Срок сделки: **10 СЕКУНД**\n"
             )
-        elif last["close"] >= last["bb_high"] and last["rsi"] > 65:
+        elif last["close"] >= last["bb_high"] and last["rsi"] > 75: # Более жесткий фильтр RSI
             await send_to_all(
-                f"🔴 **POCKET OPTION: PUT (ВНИЗ)**\n\n"
-                f"💱 Пара: **{asset}**\n"
-                f"💵 Вход: {last['close']:.2f}\n"
-                f"⏳ Срок: **1-3 МИНУТЫ**\n"
+                f"🚨 **POCKET OPTION: СКАЛЬПИНГ PUT (ВНИЗ)**\n\n"
+                f"💱 Пара: **{asset}** [Таймфрейм: **S5**]\n"
+                f"💵 Вход: `{last['close']:.2f}`\n"
+                f"⚡ Критический RSI: `{last['rsi']:.1f}`\n"
+                f"⏳ Срок сделки: **10 СЕКУНД**\n"
             )
     except Exception as e:
-        logging.error(f"Ошибка расчета индикаторов {asset}: {e}")
+        logging.error(f"Ошибка индикаторов на S5 для {asset}: {e}")
 
 async def send_to_all(message: str):
     tasks = [bot.send_message(chat_id=uid, text=message, parse_mode="Markdown") for uid in SUBSCRIBERS]
@@ -100,8 +102,9 @@ async def send_to_all(message: str):
 async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
     await message.answer(
-        "🦅 **Бот Pocket Option полностью запущен и работает!**\n\n"
-        "Я анализирую графики BTC/USDT и ETH/USDT напрямую с Binance. Сигналы придут в этот чат автоматически."
+        "⚡ **Бот Pocket Option [Микро-скальпинг 10с] активирован!**\n\n"
+        "Анализирую секундные импульсы BTC и ETH с Binance. "
+        "При резком выносе цены за пределы Лент Боллинджера выдам сигнал на **10 секунд**."
     )
 
 async def handle_ping(request):
