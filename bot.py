@@ -15,7 +15,6 @@ BOT_TOKEN = "9193718167:AAE0VFcyk1jKmqbPKy5uaX_KwiYGHbyiFvA"
 CRYPTO_API_URL = "https://binance.com"
 
 # Конфигурация Webhook для Render
-# Render автоматически подставляет домен вашего приложения в переменную RENDER_EXTERNAL_URL
 WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
@@ -65,8 +64,8 @@ def calculate_bollinger(prices, period=10, dev=1.8):
     bb_low = sma - (dev * std_dev)
     return bb_high, bb_low
 
-async def scan_market():
-    logging.info("==> Фоновый сканер рынка успешно запущен.")
+async def scan_market(app: web.Application):
+    logging.info("==> Фоновый сканер рынка успешно запущен внутри цикла aiohttp.")
     while True:
         try:
             async with aiohttp.ClientSession() as session:
@@ -135,23 +134,29 @@ async def send_to_all(message: str):
 async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
     await message.answer(
-        "🦅 **Робот Pocket Option [7 активов / 10 секунд] запущен через Webhook!**\n\n"
-        "Конфликты процессов полностью устранены. Я круглосуточно сканирую рынок Binance и готов слать сигналы."
+        "🦅 **Робот Pocket Option [7 активов / 10 секунд] успешно запущен!**\n\n"
+        "Все системные конфликты и ошибки циклов событий устранены. Я круглосуточно сканирую рынок Binance."
     )
 
 async def on_startup(bot: Bot) -> None:
-    # При запуске контейнера принудительно регистрируем вебхук в Telegram
     logging.info(f"Установка Webhook на адрес: {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
 
+# ИСПРАВЛЕНО: Безопасный запуск фоновой задачи сканирования через контекст aiohttp приложения
+async def start_background_tasks(app: web.Application):
+    app['market_scanner'] = asyncio.create_task(scan_market(app))
+    yield
+    app['market_scanner'].cancel()
+    await app['market_scanner']
+
 def main():
-    # Регистрируем событие старта приложения
     dp.startup.register(on_startup)
     
-    # Создаем aiohttp приложение, которое будет принимать и запросы от Render, и сообщения от Telegram
     app = web.Application()
     
-    # Обработчик вебхуков aiogram
+    # Настраиваем фоновые задачи aiohttp
+    app.cleanup_background_tasks.append(start_background_tasks)
+    
     webhook_requests_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot
@@ -159,10 +164,6 @@ def main():
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
     
-    # Запускаем фоновый парсер котировок параллельно серверу
-    asyncio.get_event_loop().create_task(scan_market())
-    
-    # Указываем порт, который выдает Render (по умолчанию 10000 для Web Service)
     port = int(os.environ.get("PORT", 10000))
     web.run_app(app, host="0.0.0.0", port=port)
 
