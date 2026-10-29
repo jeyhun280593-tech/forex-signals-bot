@@ -64,8 +64,8 @@ def calculate_bollinger(prices, period=10, dev=1.8):
     bb_low = sma - (dev * std_dev)
     return bb_high, bb_low
 
-async def scan_market(app: web.Application):
-    logging.info("==> Фоновый сканер рынка успешно запущен внутри цикла aiohttp.")
+async def scan_market():
+    logging.info("==> Фоновый сканер рынка успешно запущен внутри Aiogram.")
     while True:
         try:
             async with aiohttp.ClientSession() as session:
@@ -135,35 +135,34 @@ async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
     await message.answer(
         "🦅 **Робот Pocket Option [7 активов / 10 секунд] успешно запущен!**\n\n"
-        "Все системные конфликты и ошибки циклов событий устранены. Я круглосуточно сканирую рынок Binance."
+        "Все системные конфликты устранены. Я круглосуточно сканирую рынок Binance."
     )
 
+# ИСПРАВЛЕНО: Безопасный запуск фоновой задачи через встроенный диспетчер aiogram
 async def on_startup(bot: Bot) -> None:
     logging.info(f"Установка Webhook на адрес: {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-
-# ИСПРАВЛЕНО: Безопасный запуск фоновой задачи сканирования через контекст aiohttp приложения
-async def start_background_tasks(app: web.Application):
-    app['market_scanner'] = asyncio.create_task(scan_market(app))
-    yield
-    app['market_scanner'].cancel()
-    await app['market_scanner']
+    
+    # Запускаем фоновую задачу сканирования прямо в текущем цикле событий диспетчера
+    asyncio.create_task(scan_market())
 
 def main():
+    # Регистрируем функцию запуска
     dp.startup.register(on_startup)
     
     app = web.Application()
     
-    # Настраиваем фоновые задачи aiohttp
-    app.cleanup_background_tasks.append(start_background_tasks)
-    
+    # Настраиваем обработчик входящих сообщений от Telegram
     webhook_requests_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot
     )
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    
+    # Передаем управление приложением в aiogram (он сам всё настроит внутри)
     setup_application(app, dp, bot=bot)
     
+    # Указываем порт Render
     port = int(os.environ.get("PORT", 10000))
     web.run_app(app, host="0.0.0.0", port=port)
 
