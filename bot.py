@@ -16,7 +16,7 @@ CRYPTO_API_URL = "https://binance.com"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%asctime)s - %(levelname)s - %(message)s')
 
 SUBSCRIBERS = set()
 
@@ -60,10 +60,10 @@ def calculate_bollinger(prices, period=10, dev=1.8):
 
 async def scan_market():
     logging.info("==> Фоновый сканер рынка успешно запущен.")
-    # ИСПРАВЛЕНО: Общая сессия для всего жизненного цикла сканера
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
+    while True:
+        try:
+            # ИСПРАВЛЕНО: Сессия открывается внутри контекстного менеджера, предотвращая 'Unclosed client session'
+            async with aiohttp.ClientSession() as session:
                 headers = {"User-Agent": "Mozilla/5.0"}
                 async with session.get(CRYPTO_API_URL, headers=headers, timeout=4) as resp:
                     if resp.status == 200:
@@ -81,11 +81,11 @@ async def scan_market():
                                 if len(price_history[asset]) >= 12:
                                     await check_pocket_signals(asset)
                         logging.info("==> Мониторинг рынка: Котировки успешно обновлены.")
-            except Exception as e:
-                logging.error(f"Ошибка сбора котировок: {e}")
-            
-            # Интервал сканирования — 5 секунд (S5 таймфрейм)
-            await asyncio.sleep(5)
+        except Exception as e:
+            logging.error(f"Ошибка сбора котировок: {e}")
+        
+        # Интервал сканирования — 5 секунд (S5 таймфрейм)
+        await asyncio.sleep(5)
 
 async def check_pocket_signals(asset):
     try:
@@ -98,7 +98,7 @@ async def check_pocket_signals(asset):
 
         last_price = prices[-1]
 
-        # Сигналы на 10-секундный отскок (Повышенная чувствительность индикаторов)
+        # Сигналы на 10-секундный отскок
         if last_price <= bb_low and rsi < 40:
             await send_to_all(
                 f"🚨 **POCKET OPTION: CALL (ВВЕРХ)**\n\n"
@@ -127,8 +127,8 @@ async def send_to_all(message: str):
 async def cmd_start(message: types.Message):
     SUBSCRIBERS.add(message.chat.id)
     await message.answer(
-        "🦅 **Робот Pocket Option [7 активов / 10 секунд] успешно перезапущен!**\n\n"
-        "Конфликты старых сессий устранены. Я собираю данные и готов выдавать сигналы."
+        "🦅 **Робот Pocket Option [7 активов / 10 секунд] запущен на сервере!**\n\n"
+        "Все ошибки сессий устранены. Я круглосуточно сканирую рынок Binance и готов слать сигналы при пробоях."
     )
 
 async def handle_ping(request):
@@ -145,14 +145,15 @@ async def start_web_server():
     logging.info(f"==> Веб-порт {port} успешно открыт для Render.")
 
 async def main():
-    # ИСПРАВЛЕНО: Принудительно закрываем абсолютно все прошлые сессии и вебхуки в Telegram перед пуллингом
-    logging.info("Очистка старых сессий в Telegram...")
-    await bot.close() # Разрываем текущие подвисшие HTTP-соединения
-    await bot.delete_webhook(drop_pending_updates=True) # Очищаем очередь старых апдейтов
-    
+    # ИСПРАВЛЕНО: Безопасное удаление старых вебхуков без жесткого закрытия всего бота
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logging.warning(f"Не удалось удалить вебхук при старте: {e}")
+        
     await start_web_server()
     
-    # Запускаем фоновую асинхронную задачу сбора цен
+    # Запускаем фоновую задачу сканирования рынка
     asyncio.create_task(scan_market())
     
     logging.info("Запуск чистого пуллинга сообщений...")
